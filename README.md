@@ -1,1 +1,2 @@
 # valutwardenbrowser
+基于bitwarden项目以及valutwarden进行个人需求的二次开发
