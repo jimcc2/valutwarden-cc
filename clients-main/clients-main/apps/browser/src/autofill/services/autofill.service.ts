@@ -523,6 +523,62 @@ export default class AutofillService implements AutofillServiceInterface {
    * @param {boolean} autoSubmitLogin Whether the autofill is for an auto-submit login
    * @returns {Promise<string | null>} The TOTP code of the successfully autofilled login, if any
    */
+  private isJumpserverMfaPage(pageDetails: PageDetail[]): boolean {
+    for (const pd of pageDetails) {
+      for (const field of pd.details.fields) {
+        if (field.placeholder === "虚拟 MFA 验证码" && field.htmlName === "code") {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private async handleJumpserverTotpFill(
+    pageDetails: PageDetail[],
+    tab: chrome.tabs.Tab,
+    cipher: CipherView,
+  ): Promise<boolean> {
+    if (!cipher?.login?.totp) {
+      return false;
+    }
+
+    let fieldFound = false;
+    for (const pd of pageDetails) {
+      for (const field of pd.details.fields) {
+        if (field.htmlName === "code" && field.type === "text") {
+          fieldFound = true;
+          const totpResponse = await firstValueFrom(this.totpService.getCode$(cipher.login.totp));
+          if (totpResponse?.code) {
+            const fillScript = new AutofillScript();
+            AutofillService.fillByOpid(fillScript, field, totpResponse.code);
+
+            // Use a small delay to ensure the field is ready
+            setTimeout(() => {
+              // FIXME: Verify that this floating promise is intentional. If it is, add an explanatory comment and ensure there is proper error handling.
+              // eslint-disable-next-line @typescript-eslint/no-floating-promises
+              BrowserApi.tabSendMessage(
+                tab,
+                {
+                  command: "fillForm",
+                  fillScript: fillScript,
+                  url: tab.url,
+                  pageDetailsUrl: pd.details.url,
+                },
+                { frameId: pd.frameId },
+              );
+            }, 250); // 250ms delay
+          }
+          break;
+        }
+      }
+      if (fieldFound) {
+        break;
+      }
+    }
+    return fieldFound;
+  }
+
   async doAutoFillOnTab(
     pageDetails: PageDetail[],
     tab: chrome.tabs.Tab,
@@ -556,7 +612,22 @@ export default class AutofillService implements AutofillServiceInterface {
       }
     }
 
-    if (cipher == null || (cipher.reprompt === CipherRepromptType.Password && !fromCommand)) {
+    if (cipher == null) {
+      return null;
+    }
+
+    // Jumpserver specific logic
+    if (this.isJumpserverMfaPage(pageDetails)) {
+      const handled = await this.handleJumpserverTotpFill(pageDetails, tab, cipher);
+      if (handled) {
+        // If Jumpserver logic handled it, we might not want to proceed with regular autofill
+        // or we could return the totp if we decide to handle it that way.
+        // For now, just stopping further execution.
+        return null;
+      }
+    }
+
+    if (cipher.reprompt === CipherRepromptType.Password && !fromCommand) {
       return null;
     }
 
@@ -618,6 +689,7 @@ export default class AutofillService implements AutofillServiceInterface {
     return false;
   }
 
+  /**
   /**
    * Autofill the active tab with the next cipher from the cache
    * @param {PageDetail[]} pageDetails The data scraped from the page
