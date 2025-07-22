@@ -649,7 +649,7 @@ export default class AutofillService implements AutofillServiceInterface {
       onlyVisibleFields: !fromCommand,
       fillNewPassword: fromCommand,
       allowUntrustedIframe: fromCommand,
-      allowTotpAutofill: fromCommand,
+      allowTotpAutofill: true, // Always allow TOTP autofill
       autoSubmitLogin,
     });
 
@@ -1017,9 +1017,17 @@ export default class AutofillService implements AutofillServiceInterface {
           return;
         }
 
+        const isMfaPasswordField = field.type === "password" && 
+          [field.htmlName, field.htmlID, field.placeholder, field["label-tag"], field["label-aria"], field.htmlClass]
+            .filter(Boolean).some(text => text && typeof text === 'string' && 
+              ["2factor", "twofactor", "mfa", "2fa", "totp", "otp", "auth", "verify", "verification", "security", "code", "token"].some(keyword => 
+                text.toLowerCase().includes(keyword)
+              )
+            );
+        
         const isFillableTotpField =
           options.allowTotpAutofill &&
-          ["number", "tel", "text"].some((t) => t === field.type) &&
+          (["number", "tel", "text"].some((t) => t === field.type) || isMfaPasswordField) &&
           (AutofillService.fieldIsFuzzyMatch(field, [
             ...AutoFillConstants.TotpFieldNames,
             ...AutoFillConstants.AmbiguousTotpFieldNames,
@@ -2471,7 +2479,15 @@ export default class AutofillService implements AutofillServiceInterface {
       }
 
       // We want to avoid treating TOTP fields as password fields
-      if (AutofillService.fieldIsFuzzyMatch(f, AutoFillConstants.TotpFieldNames)) {
+      const isMfaPasswordField = f.type === "password" && 
+        [f.htmlName, f.htmlID, f.placeholder, f["label-tag"], f["label-aria"], f.htmlClass]
+          .filter(Boolean).some(text => text && typeof text === 'string' && 
+            ["2factor", "twofactor", "mfa", "2fa", "totp", "otp", "auth", "verify", "verification", "security", "code", "token"].some(keyword => 
+              text.toLowerCase().includes(keyword)
+            )
+          );
+      
+      if (AutofillService.fieldIsFuzzyMatch(f, AutoFillConstants.TotpFieldNames) || isMfaPasswordField) {
         return;
       }
 
@@ -2586,7 +2602,7 @@ export default class AutofillService implements AutofillServiceInterface {
         (canBeReadOnly || !f.readonly) &&
         (withoutForm || f.form === passwordField.form) &&
         (canBeHidden || f.viewable) &&
-        (f.type === "text" || f.type === "number") &&
+        (f.type === "text" || f.type === "number" || (f.type === "password" && this.isPasswordTypeMfaField(f))) &&
         AutofillService.fieldIsFuzzyMatch(f, [
           ...AutoFillConstants.TotpFieldNames,
           ...AutoFillConstants.AmbiguousTotpFieldNames,
@@ -2608,6 +2624,38 @@ export default class AutofillService implements AutofillServiceInterface {
     }
 
     return totpField;
+  }
+
+  /**
+   * Determines if a password-type field is actually an MFA field
+   * @param {AutofillField} field
+   * @returns {boolean}
+   * @private
+   */
+  private isPasswordTypeMfaField(field: AutofillField): boolean {
+    if (field.type !== "password") {
+      return false;
+    }
+    
+    const fieldTexts: string[] = [
+      field.htmlName,
+      field.htmlID,
+      field.placeholder,
+      field["label-tag"],
+      field["label-aria"],
+      field.htmlClass,
+    ].filter(Boolean).map((text: string) => (text || '').toLowerCase());
+    
+    // Check for MFA-specific keywords in password-type fields
+    const mfaKeywords = [
+      "2factor", "twofactor", "two_factor", "two-factor",
+      "mfa", "2fa", "totp", "otp", "auth", "verify", "verification",
+      "security", "code", "token", "pin"
+    ];
+    
+    return fieldTexts.some(text => 
+      mfaKeywords.some(keyword => text.includes(keyword))
+    );
   }
 
   /**

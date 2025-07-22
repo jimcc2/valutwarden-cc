@@ -15,6 +15,12 @@ export class EnhancedMfaConstants {
     "verification", "verificationcode", "verification_code", "verification-code",
     "security", "securitycode", "security_code", "security-code",
     
+    // Special password-type MFA fields (commonly used patterns)
+    "2factor_password", "2factor_pass", "twofactor_password", "twofactor_pass",
+    "mfa_password", "mfa_pass", "auth_password", "auth_pass",
+    "totp_password", "totp_pass", "otp_password", "otp_pass",
+    "verify_password", "verify_pass", "verification_password",
+    
     // Common specific patterns
     "smsverification", "sms_verification", "sms-verification",
     "emailverification", "email_verification", "email-verification",

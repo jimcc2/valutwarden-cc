@@ -183,9 +183,13 @@ export class EnhancedTotpUtils {
       }
     }
 
-    // 字段类型检查
-    if (field.type && ["text", "number", "tel"].includes(field.type)) {
+    // 字段类型检查 (包括password类型的MFA字段)
+    if (field.type && ["text", "number", "tel", "password"].includes(field.type)) {
       score += 0.2;
+      // password类型的MFA字段通常置信度更高
+      if (field.type === "password" && this.isLikelyMfaPasswordField(field)) {
+        score += 0.3;
+      }
     }
 
     // 字段长度检查
@@ -327,7 +331,7 @@ export class EnhancedTotpUtils {
       field["label-tag"],
       field["label-aria"],
       field.htmlClass,
-    ].filter(Boolean).map(text => text.toLowerCase());
+    ].filter(Boolean).map(text => (text || '').toLowerCase());
   }
 
   private static textContains(text: string, keyword: string): boolean {
@@ -349,6 +353,37 @@ export class EnhancedTotpUtils {
         text.includes(indicator)
       )
     );
+  }
+
+  /**
+   * 判断是否为可能的MFA密码字段
+   */
+  private static isLikelyMfaPasswordField(field: any): boolean {
+    if (field.type !== "password") return false;
+    
+    const fieldTexts = this.getFieldTexts(field);
+    
+    // 检查字段名称是否包含MFA相关关键词
+    const mfaKeywords = [
+      "2factor", "twofactor", "two_factor", "two-factor",
+      "mfa", "totp", "otp", "auth", "verification", "verify",
+      "security", "token", "code"
+    ];
+    
+    const containsMfaKeyword = fieldTexts.some(text => 
+      text && typeof text === 'string' && mfaKeywords.some(keyword => text.includes(keyword))
+    );
+    
+    // 检查是否有自动完成属性表明这是一次性密码
+    const hasOtpAutocomplete = field.autoCompleteType && 
+      (field.autoCompleteType.includes("one-time-code") || 
+       field.autoCompleteType.includes("current-password") === false);
+    
+    // 检查字段长度是否符合典型的验证码长度
+    const hasTypicalLength = field.maxLength && 
+      EnhancedTotpConstants.CommonTotpLengths.includes(field.maxLength);
+    
+    return containsMfaKeyword || hasOtpAutocomplete || hasTypicalLength;
   }
 
   private static findSegmentedByPattern(fields: any[]): any[] {
