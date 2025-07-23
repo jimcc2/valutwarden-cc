@@ -162,7 +162,7 @@ export default class AutofillService implements AutofillServiceInterface {
 
     // Create a timeout observable that emits an empty array if pageDetailsFromTab$ hasn't emitted within 1 second.
     const pageDetailsTimeout$ = timer(1000).pipe(
-      map(() => []),
+      map((): PageDetail[] => []),
       takeUntil(sharedPageDetailsFromTab$),
     );
 
@@ -534,6 +534,93 @@ export default class AutofillService implements AutofillServiceInterface {
     return false;
   }
 
+  /**
+   * 检测页面是否为华为云MFA页面（只要有6个MFA输入框就认为是MFA弹窗）
+   * @param pageDetails 页面详情
+   * @returns 是否为华为云MFA页面
+   */
+  private isHuaweiCloudMfaPage(pageDetails: PageDetail[]): boolean {
+    let mfaFieldCount = 0;
+    for (const pd of pageDetails) {
+      const url = pd.details?.url?.toLowerCase() || "";
+      const isHuaweiUrl = url.includes('huawei') || url.includes('hwid') || url.includes('hcloud');
+      if (!isHuaweiUrl) continue;
+      for (const field of pd.details.fields) {
+        if (this.isHuaweiCloudField(field)) {
+          mfaFieldCount++;
+        }
+      }
+    }
+    // 只要有6个MFA输入框就认为是MFA弹窗
+    return mfaFieldCount >= 6;
+  }
+
+  /**
+   * 检测单个字段是否为华为云MFA字段（精确版本）
+   * @param field 字段对象
+   * @returns 是否为华为云MFA字段
+   */
+  private isHuaweiCloudField(field: any): boolean {
+    const className = field.htmlClass?.toLowerCase() || "";
+    const fieldName = field.htmlName?.toLowerCase() || field.htmlID?.toLowerCase() || "";
+    const htAttribute = (field as any)["ht"]?.toLowerCase() || "";
+    const placeholder = field.placeholder?.toLowerCase() || "";
+    const fieldType = field.type?.toLowerCase() || "";
+    const dataIndex = (field as any)["data-index"];
+
+    // 排除明确的用户名密码字段
+    if (this.isHuaweiCloudLoginField(field)) {
+      return false;
+    }
+
+    // 检查是否为MFA相关字段的明确标识
+    const isMfaField = 
+      // 1. 验证码输入框（通常是tel类型且有data-index）
+      (fieldType === "tel" && dataIndex !== undefined && className.includes('hwid-input')) ||
+      
+      // 2. ht属性包含input_code（MFA字段特有）
+      htAttribute.includes('input_code') ||
+      
+      // 3. 字段名包含验证码相关关键词
+      fieldName.includes('code') || fieldName.includes('verify') || fieldName.includes('otp') || fieldName.includes('totp') ||
+      
+      // 4. placeholder包含验证码相关文字
+      placeholder.includes('验证码') || placeholder.includes('code') || placeholder.includes('验证');
+
+    this.logService.info(`MFA字段检测详情: type=${fieldType}, dataIndex=${dataIndex}, class=${className}, ht=${htAttribute}, 结果=${isMfaField}`);
+    
+    return isMfaField;
+  }
+
+  /**
+   * 检测是否为华为云用户名密码字段
+   * @param field 字段对象
+   * @returns 是否为华为云登录字段
+   */
+  private isHuaweiCloudLoginField(field: any): boolean {
+    const className = field.htmlClass?.toLowerCase() || "";
+    const fieldName = field.htmlName?.toLowerCase() || field.htmlID?.toLowerCase() || "";
+    const htAttribute = (field as any)["ht"]?.toLowerCase() || "";
+    const placeholder = field.placeholder?.toLowerCase() || "";
+    const fieldType = field.type?.toLowerCase() || "";
+
+    // 华为云用户名字段
+    const isUsernameField = 
+      fieldType === "text" && 
+      (fieldName.includes('useraccount') || 
+       htAttribute.includes('input_pwdlogin_account') ||
+       placeholder.includes('手机号') || placeholder.includes('邮件地址') || placeholder.includes('账号名'));
+
+    // 华为云密码字段
+    const isPasswordField = 
+      fieldType === "password" && 
+      (className.includes('hwid-input-pwd') || 
+       htAttribute.includes('input_pwdlogin_pwd') ||
+       placeholder.includes('密码'));
+
+    return isUsernameField || isPasswordField;
+  }
+
   private async handleJumpserverTotpFill(
     pageDetails: PageDetail[],
     tab: chrome.tabs.Tab,
@@ -577,6 +664,137 @@ export default class AutofillService implements AutofillServiceInterface {
       }
     }
     return fieldFound;
+  }
+
+  /**
+   * 处理华为云TOTP填充
+   * @param pageDetails 页面详情
+   * @param tab 标签页
+   * @param cipher 密码条目
+   * @returns 是否成功处理
+   */
+  private async handleHuaweiCloudTotpFill(
+    pageDetails: PageDetail[],
+    tab: chrome.tabs.Tab,
+    cipher: CipherView,
+  ): Promise<boolean> {
+    this.logService.info("=== 华为云TOTP填充开始 ===");
+    
+    if (!cipher?.login?.totp) {
+      this.logService.info("没有TOTP配置，退出");
+      return false;
+    }
+
+    let fieldFound = false;
+    const huaweiFields: AutofillField[] = [];
+
+    // 收集所有华为云字段
+    for (const pd of pageDetails) {
+      this.logService.info(`处理页面详情，字段数: ${pd.details.fields.length}`);
+      for (const field of pd.details.fields) {
+        if (this.isHuaweiCloudField(field)) {
+          huaweiFields.push(field);
+          fieldFound = true;
+          this.logService.info(`找到华为云MFA字段: type=${field.type}, dataIndex=${(field as any)["data-index"]}, ht=${(field as any)["ht"]}`);
+        }
+      }
+    }
+
+    this.logService.info(`总共找到华为云字段数: ${huaweiFields.length}`);
+
+    if (!fieldFound || huaweiFields.length === 0) {
+      this.logService.info("未找到华为云字段，退出");
+      return false;
+    }
+
+    try {
+      const totpResponse = await firstValueFrom(this.totpService.getCode$(cipher.login.totp));
+      if (!totpResponse?.code) {
+        this.logService.info("无法获取TOTP代码");
+        return false;
+      }
+
+      const totpCode = totpResponse.code;
+      this.logService.info(`获取TOTP代码: ${totpCode} (长度: ${totpCode.length})`);
+
+      // 智能填充逻辑：根据字段数量和TOTP代码长度决定填充方式
+      const fillScript = new AutofillScript();
+
+      if (huaweiFields.length > 1) {
+        // 多个字段：按data-index或元素顺序排序
+        huaweiFields.sort((a, b) => {
+          const aIndex = parseInt((a as any)["data-index"] || "0");
+          const bIndex = parseInt((b as any)["data-index"] || "0");
+          if (aIndex !== bIndex) return aIndex - bIndex;
+          return a.elementNumber - b.elementNumber;
+        });
+
+        this.logService.info(`字段排序后顺序: ${huaweiFields.map(f => `index=${(f as any)["data-index"]}`).join(', ')}`);
+
+        // 智能分段填充：根据字段数量和TOTP长度
+        if (huaweiFields.length === totpCode.length) {
+          // 字段数量等于验证码长度：每个字段填一位
+          this.logService.info("字段数等于验证码长度，每个字段填一位");
+          huaweiFields.forEach((field, index) => {
+            const char = totpCode.charAt(index);
+            this.logService.info(`字段 ${index} (data-index=${(field as any)["data-index"]}) 填入: ${char}`);
+            AutofillService.fillByOpid(fillScript, field, char);
+          });
+        } else if (huaweiFields.length < totpCode.length) {
+          // 字段数量少于验证码长度：均匀分配
+          this.logService.info("字段数少于验证码长度，均匀分配");
+          const charsPerField = Math.ceil(totpCode.length / huaweiFields.length);
+          huaweiFields.forEach((field, index) => {
+            const start = index * charsPerField;
+            const end = Math.min(start + charsPerField, totpCode.length);
+            const segment = totpCode.substring(start, end);
+            this.logService.info(`字段 ${index} (data-index=${(field as any)["data-index"]}) 填入片段: ${segment}`);
+            AutofillService.fillByOpid(fillScript, field, segment);
+          });
+        } else {
+          // 字段数量多于验证码长度：只填充前N个字段
+          this.logService.info("字段数多于验证码长度，只填充前N个字段");
+          huaweiFields.slice(0, totpCode.length).forEach((field, index) => {
+            const char = totpCode.charAt(index);
+            this.logService.info(`字段 ${index} (data-index=${(field as any)["data-index"]}) 填入: ${char}`);
+            AutofillService.fillByOpid(fillScript, field, char);
+          });
+        }
+      } else {
+        // 单个字段：填入完整验证码
+        this.logService.info("单个字段，填入完整验证码");
+        AutofillService.fillByOpid(fillScript, huaweiFields[0], totpCode);
+      }
+
+      // 延迟发送填充脚本
+      setTimeout(() => {
+        this.logService.info("延迟150ms后发送填充脚本");
+        for (const pd of pageDetails) {
+          if (huaweiFields.some(f => pd.details.fields.includes(f))) {
+            this.logService.info(`向frameId ${pd.frameId} 发送填充脚本`);
+            // FIXME: Verify that this floating promise is intentional. If it is, add an explanatory comment and ensure there is proper error handling.
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            BrowserApi.tabSendMessage(
+              tab,
+              {
+                command: "fillForm",
+                fillScript: fillScript,
+                url: tab.url,
+                pageDetailsUrl: pd.details.url,
+              },
+              { frameId: pd.frameId },
+            );
+            break;
+          }
+        }
+      }, 150); // 华为云需要较短延迟
+
+      this.logService.info("=== 华为云TOTP填充成功 ===");
+      return true;
+    } catch (error) {
+      this.logService.error("华为云TOTP填充失败:", error);
+      return false;
+    }
   }
 
   async doAutoFillOnTab(
@@ -625,6 +843,29 @@ export default class AutofillService implements AutofillServiceInterface {
         // For now, just stopping further execution.
         return null;
       }
+    }
+
+    // 华为云特定逻辑 - 仅在确实是TOTP请求且是华为云域名时才处理
+    this.logService.info(`=== doAutoFillOnTab 华为云检查 ===`);
+    this.logService.info(`密码本有TOTP: ${!!cipher.login?.totp}`);
+    
+    const isHuaweiMfaPage = this.isHuaweiCloudMfaPage(pageDetails);
+    this.logService.info(`是华为云MFA页面: ${isHuaweiMfaPage}`);
+    
+    if (cipher.login?.totp && isHuaweiMfaPage) {
+      this.logService.info("符合华为云MFA处理条件，开始处理");
+      const handled = await this.handleHuaweiCloudTotpFill(pageDetails, tab, cipher);
+      if (handled) {
+        this.logService.info("华为云MFA处理成功");
+        // 华为云逻辑处理成功，返回TOTP代码以便复制到剪贴板
+        const totpResponse = await firstValueFrom(this.totpService.getCode$(cipher.login.totp));
+        return totpResponse?.code || null;
+      } else {
+        this.logService.info("华为云MFA处理失败，继续正常流程");
+      }
+      // 如果华为云处理失败，继续正常流程
+    } else {
+      this.logService.info("不符合华为云MFA处理条件，跳过");
     }
 
     if (cipher.reprompt === CipherRepromptType.Password && !fromCommand) {
@@ -1025,14 +1266,20 @@ export default class AutofillService implements AutofillServiceInterface {
               )
             );
         
+        // 检查是否为华为云字段
+        const isHuaweiCloudField = () => {
+          return this.isHuaweiCloudField(field);
+        };
+
         const isFillableTotpField =
           options.allowTotpAutofill &&
-          (["number", "tel", "text"].some((t) => t === field.type) || isMfaPasswordField) &&
+          (["number", "tel", "text"].some((t) => t === field.type) || isMfaPasswordField || isHuaweiCloudField()) &&
           (AutofillService.fieldIsFuzzyMatch(field, [
             ...AutoFillConstants.TotpFieldNames,
             ...AutoFillConstants.AmbiguousTotpFieldNames,
           ]) ||
-            field.autoCompleteType === "one-time-code");
+            field.autoCompleteType === "one-time-code" ||
+            isHuaweiCloudField());
 
         const isFillableUsernameField =
           !options.skipUsernameOnlyFill &&

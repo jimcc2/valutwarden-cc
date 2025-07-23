@@ -298,6 +298,7 @@ import { OffscreenStorageService } from "../platform/storage/offscreen-storage.s
 import { SyncServiceListener } from "../platform/sync/sync-service.listener";
 import { fromChromeRuntimeMessaging } from "../platform/utils/from-chrome-runtime-messaging";
 import { VaultFilterService } from "../vault/services/vault-filter.service";
+import { getOptionalUserId } from "@bitwarden/common/auth/services/account.service";
 
 import CommandsBackground from "./commands.background";
 import IdleBackground from "./idle.background";
@@ -422,7 +423,7 @@ export default class MainBackground {
   private restrictedItemTypesService: RestrictedItemTypesService;
 
   ipcContentScriptManagerService: IpcContentScriptManagerService;
-  ipcService: IpcService;
+  ipcService: IpcBackgroundService;
 
   badgeService: BadgeService;
   authStatusBadgeUpdaterService: AuthStatusBadgeUpdaterService;
@@ -1848,3 +1849,34 @@ export default class MainBackground {
     await this.passwordGenerationService.addHistory(password);
   };
 }
+
+chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+  if (message && message.command === "getTotpCodeForHuawei") {
+    (async () => {
+      try {
+        const mainBackground = (globalThis as any).bitwardenMain;
+        const userId = await firstValueFrom(mainBackground.accountService.activeAccount$.pipe(getOptionalUserId));
+        console.log('[后台TOTP] 当前activeUserId:', userId);
+        if (!userId) {
+          console.log('[后台TOTP] 未获取到activeUserId，直接返回null');
+          sendResponse({ totpCode: null });
+          return;
+        }
+        const ciphers = await mainBackground.cipherService.getAllDecrypted(userId);
+        console.log('[后台TOTP] 全部ciphers:', ciphers);
+        const cipher = ciphers.find((c: any) => c.login && c.login.totp);
+        let code = null;
+        if (cipher && cipher.login && cipher.login.totp) {
+          const totpResponse: any = await firstValueFrom(mainBackground.totpService.getCode$(cipher.login.totp));
+          code = totpResponse?.code || totpResponse?.totpCode || null;
+        }
+        console.log('[后台TOTP] 返回验证码:', code);
+        sendResponse({ totpCode: code });
+      } catch (e) {
+        console.error('[后台TOTP] 获取验证码异常:', e);
+        sendResponse({ totpCode: null });
+      }
+    })();
+    return true;
+  }
+});

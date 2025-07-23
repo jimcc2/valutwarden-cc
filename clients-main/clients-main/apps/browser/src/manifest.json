@@ -16,6 +16,16 @@
   },
   "content_scripts": [
     {
+      "all_frames": true,
+      "js": ["content/bootstrap-autofill-overlay.js"],
+      "matches": [
+        "https://*.huaweicloud.com/*",
+        "https://auth.huaweicloud.com/*",
+        "https://account.huaweicloud.com/*"
+      ],
+      "run_at": "document_end"
+    },
+    {
       "all_frames": false,
       "js": ["content/content-message-handler.js"],
       "matches": ["*://*/*", "file:///*"],

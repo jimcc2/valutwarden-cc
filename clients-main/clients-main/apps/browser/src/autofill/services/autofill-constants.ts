@@ -44,9 +44,31 @@ export class AutoFillConstants {
     "twofactorcode",
     "verificationcode",
     "verification code",
+    // 华为云特有字段
+    "input_code",
+    "hwid_code",
+    "hwid_input",
+    "huawei_code",
+    "huawei_input",
   ];
 
   static readonly AmbiguousTotpFieldNames: string[] = ["code", "pin", "otc", "otp", "2fa", "mfa"];
+
+  // 华为云特有的CSS类名
+  static readonly HuaweiCloudClasses: string[] = [
+    "hwid-input",
+    "hwid_input", 
+    "huawei-input",
+    "huawei_input",
+    "hcloud-input",
+    "hcloud_input",
+  ];
+
+  // 华为云特有的属性名
+  static readonly HuaweiCloudAttributes: string[] = [
+    "data-index",
+    "ht",
+  ];
 
   static readonly SearchFieldNames: string[] = ["search", "query", "find", "go"];
 
