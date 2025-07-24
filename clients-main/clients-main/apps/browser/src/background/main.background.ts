@@ -1415,7 +1415,7 @@ export default class MainBackground {
     await Promise.all(setUserKeyInMemoryPromises);
 
     await (this.i18nService as I18nService).init();
-    (this.eventUploadService as EventUploadService).init(true);
+    (this.eventUploadService as EventUploadService).init(false);
 
     this.popupViewCacheBackgroundService.startObservingMessages();
 
